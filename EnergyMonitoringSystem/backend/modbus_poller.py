@@ -153,7 +153,7 @@ class ModbusPoller:
         """Close Modbus connection"""
         try:
             self.client.close()
-            logger.info(f"Disconnected from {MODBUS_HOST}")
+            logger.info(f"Disconnected from {self.device_name}")
         except Exception as e:
             logger.error(f"Disconnect error: {e}")
 
@@ -164,7 +164,7 @@ class ModbusPoller:
             while attempts < MAX_RETRIES:
                 attempts += 1
                 try:
-                    rr = self.client.read_input_registers(address=address, count=count, slave=self.unit_id)
+                    rr = self.client.read_input_registers(address=address, count=count, unit=self.unit_id)
                     if rr and not rr.isError():
                         regs = rr.registers
                         if regs is None or len(regs) != count:
@@ -187,7 +187,7 @@ class ModbusPoller:
             while attempts < MAX_RETRIES:
                 attempts += 1
                 try:
-                    rr2 = self.client.read_holding_registers(address=address, count=count, slave=self.unit_id)
+                    rr2 = self.client.read_holding_registers(address=address, count=count, unit=self.unit_id)
                     if rr2 and not rr2.isError():
                         regs = rr2.registers
                         if regs is None or len(regs) != count:
@@ -468,97 +468,8 @@ class ModbusPoller:
                     "@Quality": params.get("@Quality") or "GOOD",
                 }
 
-                # If KWh_Total is missing or non-positive, bypass SP and insert directly
-                if sp_params.get("@KWh_Total") is None or (isinstance(sp_params.get("@KWh_Total"), (int, float)) and sp_params.get("@KWh_Total") <= 0):
-                    sp_err = None
-                    insert_q = (
-                        """
-                        INSERT INTO app.Readings (
-                            AnalyzerID, KW_L1, KW_L2, KW_L3, KW_Total,
-                            KWh_L1, KWh_L2, KWh_L3, KWh_Total,
-                            VL1, VL2, VL3, IL1, IL2, IL3, ITotal,
-                            Hz, PF_L1, PF_L2, PF_L3, PF_Avg,
-                            KWh_Grid, KWh_Generator, Quality
-                        ) VALUES (
-                            ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?,
-                            ?, ?, ?
-                        )
-                        """
-                    )
-                    db_helper.execute_query(
-                        insert_q,
-                        (
-                            self.device_id,
-                            params.get("@KW_L1"), params.get("@KW_L2"), params.get("@KW_L3"), params.get("@KW_Total"),
-                            params.get("@KWh_L1"), params.get("@KWh_L2"), params.get("@KWh_L3"), params.get("@KWh_Total") or 0.0,
-                            params.get("@VL1"), params.get("@VL2"), params.get("@VL3"), params.get("@IL1"), params.get("@IL2"), params.get("@IL3"), params.get("@ITotal"),
-                            params.get("@Hz"), params.get("@PF_L1"), params.get("@PF_L2"), params.get("@PF_L3"), params.get("@PF_Avg"),
-                            params.get("@KWh_Grid") or 0.0, params.get("@KWh_Generator") or 0.0, params.get("@Quality") or "GOOD",
-                        )
-                    )
-                else:
-                    try:
-                        db_helper.execute_stored_procedure("app.sp_InsertReading", sp_params)
-                    except Exception as sp_err:
-                        insert_q = (
-                            """
-                            INSERT INTO app.Readings (
-                                AnalyzerID, KW_L1, KW_L2, KW_L3, KW_Total,
-                                KWh_L1, KWh_L2, KWh_L3, KWh_Total,
-                                VL1, VL2, VL3, IL1, IL2, IL3, ITotal,
-                                Hz, PF_L1, PF_L2, PF_L3, PF_Avg,
-                                KWh_Grid, KWh_Generator, Quality
-                            ) VALUES (
-                                ?, ?, ?, ?, ?,
-                                ?, ?, ?, ?,
-                                ?, ?, ?, ?, ?, ?, ?,
-                                ?, ?, ?, ?, ?,
-                                ?, ?, ?
-                            )
-                            """
-                        )
-                        db_helper.execute_query(
-                            insert_q,
-                            (
-                                self.device_id,
-                                params.get("@KW_L1"), params.get("@KW_L2"), params.get("@KW_L3"), params.get("@KW_Total"),
-                                params.get("@KWh_L1"), params.get("@KWh_L2"), params.get("@KWh_L3"), params.get("@KWh_Total") or 0.0,
-                                params.get("@VL1"), params.get("@VL2"), params.get("@VL3"), params.get("@IL1"), params.get("@IL2"), params.get("@IL3"), params.get("@ITotal"),
-                                params.get("@Hz"), params.get("@PF_L1"), params.get("@PF_L2"), params.get("@PF_L3"), params.get("@PF_Avg"),
-                                params.get("@KWh_Grid") or 0.0, params.get("@KWh_Generator") or 0.0, params.get("@Quality") or "GOOD",
-                            )
-                        )
-                    insert_q = (
-                        """
-                        INSERT INTO app.Readings (
-                            AnalyzerID, KW_L1, KW_L2, KW_L3, KW_Total,
-                            KWh_L1, KWh_L2, KWh_L3, KWh_Total,
-                            VL1, VL2, VL3, IL1, IL2, IL3, ITotal,
-                            Hz, PF_L1, PF_L2, PF_L3, PF_Avg,
-                            KWh_Grid, KWh_Generator, Quality
-                        ) VALUES (
-                            ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?,
-                            ?, ?, ?
-                        )
-                        """
-                    )
-                    db_helper.execute_query(
-                        insert_q,
-                        (
-                            self.device_id,
-                            params.get("@KW_L1"), params.get("@KW_L2"), params.get("@KW_L3"), params.get("@KW_Total"),
-                            params.get("@KWh_L1"), params.get("@KWh_L2"), params.get("@KWh_L3"), params.get("@KWh_Total"),
-                            params.get("@VL1"), params.get("@VL2"), params.get("@VL3"), params.get("@IL1"), params.get("@IL2"), params.get("@IL3"), params.get("@ITotal"),
-                            params.get("@Hz"), params.get("@PF_L1"), params.get("@PF_L2"), params.get("@PF_L3"), params.get("@PF_Avg"),
-                            params.get("@KWh_Grid"), params.get("@KWh_Generator"), params.get("@Quality") or "GOOD",
-                        )
-                    )
+                # Always use stored procedure for ingestion (no direct INSERT fallbacks)
+                db_helper.execute_stored_procedure("app.sp_InsertReading", sp_params)
 
                 try:
                     db_helper.execute_query(
@@ -577,6 +488,16 @@ class ModbusPoller:
                 return True
             except Exception as db_error:
                 logger.error(f"Database error logging reading for analyzer {self.device_id}: {db_error}")
+                try:
+                    db_helper.execute_query(
+                        """
+                        INSERT INTO ops.Events (AnalyzerID, Level, EventType, Message, Source)
+                        VALUES (?, 'ERROR', 'reading_insert_failed', ?, 'POLLER')
+                        """,
+                        (self.device_id, str(db_error)),
+                    )
+                except Exception:
+                    pass
                 return False
 
         except Exception as e:
@@ -645,8 +566,6 @@ class ModbusPoller:
         except Exception as e:
             logger.error(f"Error polling {self.device_name}: {e}")
             return False
-        # Don't disconnect here as we want to keep connection open for multi-device polling
-            pass
 
     async def control_digital_output(self, coil_address: int, state: bool) -> bool:
         """
@@ -663,7 +582,7 @@ class ModbusPoller:
             response = self.client.write_coil(
                 address=coil_address,
                 value=state,
-                slave=self.unit_id
+                unit=self.unit_id
             )
 
             if response and not response.isError():

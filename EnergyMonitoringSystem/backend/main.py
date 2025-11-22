@@ -191,80 +191,13 @@ async def startup_alerts():
 async def startup_event():
     """Initialize background tasks on startup"""
     import asyncio
-    import threading
     from backend.websocket_manager import periodic_status_updates
-    from backend.poller_service import poll_worker
 
     # Start WebSocket status updates (every 30 seconds)
     asyncio.create_task(periodic_status_updates())
 
-    # Start continuous poller service in background thread
-    def start_continuous_poller():
-        print("🔧 Starting PAC3220 Poller Service...")
-        print("   Thread started successfully")
-
-        try:
-            # DB config
-            db_cfg = dict(
-                driver="ODBC Driver 17 for SQL Server",
-                server="localhost",
-                db="PAC3220DB",
-                user="sa",
-                pwd="YourStrong!Passw0rd"
-            )
-            print("   Database config loaded")
-
-            # Check if analyzer exists and create if needed
-            print("   Checking for active analyzers...")
-            analyzer_check = db_helper.execute_query('SELECT COUNT(*) as total FROM app.Analyzers WHERE IsActive = 1')
-            analyzer_count = analyzer_check[0]['total'] if analyzer_check else 0
-            print(f"   Found {analyzer_count} active analyzers")
-
-            if analyzer_count == 0:
-                print("   ⚠️  No active analyzers found, creating test analyzer...")
-                db_helper.execute_query('''
-                    INSERT INTO app.Analyzers (UserID, SerialNumber, IPAddress, ModbusID, Location, IsActive)
-                    VALUES (1, 'PAC3220-AUTO-001', '192.168.10.2', 1, 'Auto-Configured', 1)
-                ''')
-                print("   ✅ Test analyzer created")
-                analyzer_count = 1
-
-            # Get analyzer config dynamically
-            analyzer_result = db_helper.execute_query('SELECT TOP 1 AnalyzerId, IPAddress, ModbusUnitId FROM app.Analyzers WHERE IsActive = 1')
-            if not analyzer_result:
-                print("   ❌ No active analyzers available after creation")
-                return
-
-            analyzer = {
-                'AnalyzerId': analyzer_result[0]['AnalyzerId'],
-                'IpAddress': analyzer_result[0]['IPAddress'],
-                'ModbusUnitId': analyzer_result[0]['ModbusUnitId'] or 1
-            }
-
-            print(f"   📡 Starting poller for analyzer {analyzer['AnalyzerId']} at {analyzer['IpAddress']}")
-            print("   Polling interval: 5 seconds")
-
-            # Start polling continuously with error recovery
-            print("   🚀 Starting poll_worker loop...")
-            poll_worker(analyzer, db_cfg, interval=5)
-
-        except Exception as e:
-            print(f"   ❌ Poller startup failed: {e}")
-            import traceback
-            traceback.print_exc()
-
-    print("🚀 Starting poller service thread...")
-    poller_thread = threading.Thread(target=start_continuous_poller, daemon=True, name="PAC3220-Polller")
-    poller_thread.start()
-
-    # Give it a moment and verify
-    import time
-    time.sleep(2)
-    if poller_thread.is_alive():
-        print("✅ Background services started: WebSocket + PAC3220 Poller")
-        print("   Poller thread is running and should start logging data")
-    else:
-        print("❌ Poller thread failed to start - check logs above")
+    # Unified poller will run as an independent service/process.
+    # API no longer launches legacy poller threads to avoid coupling and blocking.
 
 
 if __name__ == "__main__":

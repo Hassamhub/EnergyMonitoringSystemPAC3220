@@ -71,12 +71,6 @@
     "scale": 1.0,
     "description": "KW L3 (kW) - float"
   },
-  "energy_kwh_total": {
-    "type": "input_register",
-    "address": 81,
-    "scale": 1.0,
-    "description": "KWH Total (kWh) - float"
-  },
   "energy_kwh_grid": {
     "type": "input_register",
     "address": 801,
