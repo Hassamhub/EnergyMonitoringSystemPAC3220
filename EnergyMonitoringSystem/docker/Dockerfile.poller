@@ -1,0 +1,26 @@
+# Poller Dockerfile
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# System deps for pyodbc & ODBC Driver
+RUN apt-get update && apt-get install -y \
+    curl gnupg apt-transport-https unixodbc unixodbc-dev gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MS ODBC driver 18 (optional for SQL Server connectivity)
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
+    curl https://packages.microsoft.com/config/debian/11/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
+    apt-get update && ACCEPT_EULA=Y apt-get install -y msodbcsql18 && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PYTHONPATH=/app
+
+CMD ["python", "backend/modbus_poller.py"]
