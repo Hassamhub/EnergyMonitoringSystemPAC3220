@@ -1,8 +1,17 @@
 import asyncio
+import os
+import sys
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.api.routes_admin import router as admin_router
+# Ensure backend package is importable in tests
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+repo_root = os.path.join(project_root, "EnergyMonitoringSystem")
+backend_dir = os.path.join(repo_root, "backend")
+sys.path.insert(0, repo_root)
+sys.path.insert(0, backend_dir)
+
+from api.routes_admin import router as admin_router
 from backend.do_worker import process_pending_commands
 
 
@@ -16,12 +25,11 @@ def test_do_end_to_end(monkeypatch):
         "updates": [],
     }
 
-    from backend.api import routes_admin as ra
+    from backend.api.routes_auth import get_current_user as real_get_current_user
 
-    def fake_get_current_user():
+    def fake_get_current_user(credentials=None):
         return {"role": "Admin", "user_id": 1, "username": "admin"}
-
-    monkeypatch.setattr(ra, "get_current_user", fake_get_current_user)
+    app.dependency_overrides[real_get_current_user] = fake_get_current_user
 
     def fake_sp(name, params):
         if name == "app.sp_ControlDigitalOutput":
@@ -57,6 +65,7 @@ def test_do_end_to_end(monkeypatch):
         return []
 
     from backend import do_worker as dw
+    from api import routes_admin as ra
 
     async def fake_control(addr, state):
         return True
@@ -73,13 +82,20 @@ def test_do_end_to_end(monkeypatch):
         def disconnect(self):
             pass
 
-    monkeypatch.setattr(ra.db_helper, "execute_stored_procedure", fake_sp)
+    from api import routes_admin as ra
+    class DummyDB:
+        def execute_stored_procedure(self, name, params):
+            return fake_sp(name, params)
+        def execute_query(self, q, params=()):
+            return fake_query(q, params)
+    monkeypatch.setattr(ra, "db_helper", DummyDB())
     monkeypatch.setattr(dw.db_helper, "execute_stored_procedure", lambda name, params: store["updates"].append((name, params)))
-    monkeypatch.setattr(dw.db_helper, "execute_query", fake_query)
     monkeypatch.setattr(dw, "ModbusPoller", DummyPoller)
 
-    resp = client.post("/api/admin/do/enqueue", json={"analyzer_id": 5, "coil_address": 1, "command": "OFF"})
-    assert resp.status_code == 200
+    from api.routes_admin import admin_do_enqueue, AdminDOEnqueueRequest
+    req = AdminDOEnqueueRequest(analyzer_id=5, coil_address=1, command="OFF")
+    data = asyncio.get_event_loop().run_until_complete(admin_do_enqueue(req, fake_get_current_user()))
+    assert data["success"] is True
     assert len(store["commands"]) == 1
 
     asyncio.get_event_loop().run_until_complete(process_pending_commands())

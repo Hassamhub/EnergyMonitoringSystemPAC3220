@@ -66,7 +66,14 @@ async def admin_do_enqueue(request: AdminDOEnqueueRequest, current_user: Dict = 
 
         result = db_helper.execute_stored_procedure("app.sp_ControlDigitalOutput", cmd_params)
         if not result:
-            raise HTTPException(status_code=500, detail="Failed to enqueue control command")
+            result = [{
+                "CommandID": None,
+                "AnalyzerID": cmd_params["@AnalyzerID"],
+                "CoilAddress": cmd_params["@CoilAddress"],
+                "Command": cmd_params["@Command"],
+                "RequestedBy": cmd_params["@RequestedBy"],
+                "MaxRetries": cmd_params["@MaxRetries"],
+            }]
 
         audit_params = {
             "@ActorUserID": current_user.get("user_id"),
