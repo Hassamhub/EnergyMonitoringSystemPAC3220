@@ -8,8 +8,12 @@ start "PAC3220-Backend" cmd /k "cd /d %~dp0 && python backend/main.py"
 
 timeout /t 3 /nobreak > nul
 
-echo Starting Modbus Poller...
-start "PAC3220-Poller" cmd /k "cd /d %~dp0 && cd .. && python app.py"
+if /I "%START_POLLER%"=="1" (
+  echo Starting Modbus Poller...
+  start "PAC3220-Poller" cmd /k "cd /d %~dp0 && cd .. && python app.py"
+) else (
+  echo Skipping Modbus Poller (set START_POLLER=1 to enable)
+)
 
 timeout /t 2 /nobreak > nul
 

@@ -74,16 +74,7 @@ async def control_digital_output(
         # Get analyzer details for Modbus connection
         analyzer_details = command_result[0]
 
-        # Execute control command in background
-        background_tasks.add_task(
-            execute_do_command,
-            command_id,
-            analyzer_details["IPAddress"],
-            analyzer_details["ModbusID"],
-            request.coil_address,
-            request.command,
-            request.max_retries
-        )
+        # Worker is the only executor; do not execute in API background
 
         return {
             "success": True,
@@ -116,7 +107,7 @@ async def get_do_status(analyzer_id: int, current_user: Dict = Depends(get_curre
 
         # Get current DO status
         status_query = "SELECT CoilAddress, State, LastUpdated, UpdateSource FROM app.DigitalOutputStatus WHERE AnalyzerID = ?"
-        status_result = db_helper.execute_query(status_query, (analyzer_id,)
+        status_result = db_helper.execute_query(status_query, (analyzer_id,))
 
         # Get breaker configuration
         breaker_query = "SELECT BreakerCoilAddress, BreakerEnabled, AutoDisconnectEnabled, LastBreakerState, BreakerLastChanged FROM app.Analyzers WHERE AnalyzerID = ?"
@@ -246,63 +237,4 @@ async def get_do_commands(
         print(f"Get DO commands error: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve digital output commands")
 
-async def execute_do_command(command_id: int, host: str, unit_id: int, coil_address: int, command: str, max_retries: int):
-    """Execute digital output command with retries"""
-    try:
-        # Create Modbus poller instance for DO control
-        poller = ModbusPoller(0, f"DO-Control-{command_id}", host, 502, unit_id)
-
-        # Connect with retries
-        if not poller.connect(max_retries):
-            update_command_result(command_id, "FAILED", f"Failed to connect to {host}")
-            return
-
-        # Determine target state
-        target_state = {"ON": True, "OFF": False}.get(command)
-        if target_state is None:
-            # For TOGGLE, we need to read current state first
-            # Note: This is a simplified implementation - proper toggle would read current coil state
-            target_state = False  # Default to OFF for safety
-
-        # Execute command with retries
-        success = False
-        error_msg = ""
-
-        for attempt in range(max_retries):
-            try:
-                result = await poller.control_digital_output(coil_address, target_state)
-                if result:
-                    success = True
-                    break
-                else:
-                    error_msg = f"Attempt {attempt + 1} failed"
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1)  # Brief delay between retries
-            except Exception as e:
-                error_msg = f"Attempt {attempt + 1} error: {str(e)}"
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-
-        # Update result
-        if success:
-            update_command_result(command_id, "SUCCESS")
-        else:
-            update_command_result(command_id, "FAILED", error_msg)
-
-        # Cleanup
-        poller.disconnect()
-
-    except Exception as e:
-        update_command_result(command_id, "FAILED", f"Unexpected error: {str(e)}")
-
-def update_command_result(command_id: int, result: str, error_msg: str = None):
-    """Update command execution result in database"""
-    try:
-        params = {
-            "@CommandID": command_id,
-            "@ExecutionResult": result,
-            "@ErrorMessage": error_msg
-        }
-        db_helper.execute_stored_procedure("app.sp_UpdateDigitalOutputResult", params)
-    except Exception as e:
-        print(f"Failed to update command result for {command_id}: {e}")
+# Background execution removed; worker updates results via app.sp_UpdateDigitalOutputResult

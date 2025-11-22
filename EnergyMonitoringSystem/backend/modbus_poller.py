@@ -253,10 +253,8 @@ class ModbusPoller:
         for param_name, (address, count, datatype) in parameter_reads.items():
             value = self.read_input_register(address, count, datatype)
             if value is not None:
-                if param_name in ("power_kw_total", "power_kw_l1", "power_kw_l2", "power_kw_l3"):
-                    readings[param_name] = value / 1000.0
-                else:
-                    readings[param_name] = value
+                readings[param_name] = value
+                
             else:
                 readings[param_name] = None
 
@@ -304,6 +302,19 @@ class ModbusPoller:
         readings["frequency"] = roundv(readings.get("frequency"), 2)
 
         return readings
+
+    async def read_coil_state(self, address: int) -> Optional[bool]:
+        try:
+            rr = self.client.read_coils(address=address, count=1, unit=self.unit_id)
+            if rr and not rr.isError():
+                coils = rr.bits if hasattr(rr, "bits") else rr.getBit(0)
+                if isinstance(coils, list) and len(coils) >= 1:
+                    return bool(coils[0])
+                if isinstance(coils, bool):
+                    return coils
+            return None
+        except Exception:
+            return None
 
     # Mapping from parameter names to database parameter codes (MATCHING DATABASE SCHEMA)
     PARAMETER_NAME_TO_CODE = {
@@ -378,13 +389,13 @@ class ModbusPoller:
             # Extract and scale energy readings (PAC manual indicates DOUBLE Wh at 801/805/809/813)
             imp_t1_wh = readings.get("energy_kwh_import_t1")
             imp_t2_wh = readings.get("energy_kwh_import_t2")
-            # Convert Wh -> kWh unconditionally
+            # Use register value as kWh (per register map)
             def wh_to_kwh(raw):
                 if raw is None:
                     return None
                 try:
                     v = float(raw)
-                    return v / 1000.0
+                    return v
                 except Exception:
                     return None
 
@@ -530,7 +541,7 @@ class ModbusPoller:
                             "power_kw_total": 1.2,
                             "pf_total": 0.98,
                             "frequency": 50.0,
-                            "energy_kwh_import_t1": 100000.0,  # Wh
+                            "energy_kwh_import_t1": 100.0,
                             "energy_kwh_import_t2": 0.0,
                             "energy_kwh_export_t1": 0.0,
                             "energy_kwh_export_t2": 0.0,

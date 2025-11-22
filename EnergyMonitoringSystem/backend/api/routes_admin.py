@@ -19,9 +19,11 @@ class RechargeRequest(BaseModel):
     amount: float
     reason: Optional[str] = None
 
-class ControlRequest(BaseModel):
-    device_id: Optional[int] = None
-    action: str  # "on", "off", "reset"
+class AdminDOEnqueueRequest(BaseModel):
+    analyzer_id: int
+    coil_address: int
+    command: str
+    notes: Optional[str] = None
 
 class UserUpdateRequest(BaseModel):
     username: Optional[str] = None
@@ -41,21 +43,48 @@ class CreateUserRequest(BaseModel):
     allocated_kwh: Optional[float] = 0.0
     assign_analyzer_ip: Optional[str] = None
 
-@router.post("/devices/{device_id}/do")
-async def admin_devices_do(device_id: int, request: ControlRequest, current_user: Dict = Depends(get_current_user)):
-    """Alias endpoint to control analyzer DO for frontend compatibility."""
+@router.post("/do/enqueue")
+async def admin_do_enqueue(request: AdminDOEnqueueRequest, current_user: Dict = Depends(get_current_user)):
     try:
         if current_user.get("role") != "Admin":
             raise HTTPException(status_code=403, detail="Admin access required")
-        if request.action not in ["on", "off", "reset"]:
-            raise HTTPException(status_code=400, detail="Invalid action. Must be 'on', 'off', or 'reset'")
 
-        return await control_analyzer(device_id, request, current_user)
+        if request.command not in ["ON", "OFF", "TOGGLE"]:
+            raise HTTPException(status_code=400, detail="Invalid command. Must be ON, OFF, or TOGGLE")
+
+        if not (0 <= int(request.coil_address) <= 9999):
+            raise HTTPException(status_code=400, detail="Invalid coil address")
+
+        cmd_params = {
+            "@AnalyzerID": int(request.analyzer_id),
+            "@CoilAddress": int(request.coil_address),
+            "@Command": request.command,
+            "@RequestedBy": current_user.get("user_id"),
+            "@MaxRetries": 3,
+            "@Notes": request.notes,
+        }
+
+        result = db_helper.execute_stored_procedure("app.sp_ControlDigitalOutput", cmd_params)
+        if not result:
+            raise HTTPException(status_code=500, detail="Failed to enqueue control command")
+
+        audit_params = {
+            "@ActorUserID": current_user.get("user_id"),
+            "@Action": "AdminDOEnqueue",
+            "@Details": f"Admin {current_user.get('username')} enqueued {request.command} for analyzer {request.analyzer_id} coil {request.coil_address}",
+            "@AffectedAnalyzerID": int(request.analyzer_id),
+        }
+        try:
+            db_helper.execute_stored_procedure("ops.sp_LogAuditEvent", audit_params)
+        except Exception:
+            pass
+
+        return {"success": True, "command": result[0]}
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Alias DO control error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to control device")
+        print(f"Admin DO enqueue error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to enqueue control command")
 
 @router.get("/users")
 async def get_all_users(current_user: Dict = Depends(get_current_user)):
@@ -313,142 +342,8 @@ async def update_config(key: str, req: ConfigUpdateRequest, current_user: Dict =
         print(f"Update config error: {e}")
         raise HTTPException(status_code=500, detail="Failed to update configuration")
 
-@router.post("/users/{user_id}/control")
-async def control_user_device(user_id: int, request: ControlRequest, current_user: Dict = Depends(get_current_user)):
-    """Control user's device (turn on/off breaker)"""
-    try:
-        # Check admin permission
-        if current_user.get("role") != "Admin":
-            raise HTTPException(status_code=403, detail="Admin access required")
+# Legacy endpoints removed: use /api/admin/do/enqueue only
 
-        # Validate action
-        if request.action not in ["on", "off", "reset"]:
-            raise HTTPException(status_code=400, detail="Invalid action. Must be 'on', 'off', or 'reset'")
-
-        # Find user's active analyzer
-        analyzer_query = """
-        SELECT TOP 1 AnalyzerID, SerialNumber, UserID
-        FROM app.Analyzers
-        WHERE UserID = ? AND IsActive = 1
-        ORDER BY CreatedAt DESC
-        """
-
-        analyzers = db_helper.execute_query(analyzer_query, (user_id,))
-
-        if not analyzers or len(analyzers) == 0:
-            raise HTTPException(status_code=404, detail="No active analyzer found for user")
-
-        analyzer = analyzers[0]
-
-        # For control actions, we'll trigger an alert and log the event
-        # In a real implementation, this would communicate with the Modbus poller
-
-        # Log the control request as an event
-        event_params = {
-            "@UserID": user_id,
-            "@AnalyzerID": analyzer["AnalyzerID"],
-            "@Level": "INFO",
-            "@EventType": "admin_control_request",
-            "@Message": f"Admin {current_user.get('username')} requested {request.action} control",
-            "@Source": "API",
-            "@MetaData": f'{{"action": "{request.action}", "requested_by": "{current_user.get("username")}", "analyzer_id": {analyzer["AnalyzerID"]}}}'
-        }
-
-        # Insert into events table directly since we don't have the stored procedure
-        event_query = """
-        INSERT INTO ops.Events (UserID, AnalyzerID, Level, EventType, Message, Source, MetaData)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """
-        db_helper.execute_query(event_query, (
-            user_id, analyzer["AnalyzerID"], "INFO", "admin_control_request",
-            f"Admin {current_user.get('username')} requested {request.action} control",
-            "API", event_params["@MetaData"]
-        ))
-
-        # Audit log
-        audit_params = {
-            "@ActorUserID": current_user.get("user_id"),
-            "@Action": "AnalyzerControl",
-            "@Details": f"Admin {current_user.get('username')} controlled analyzer {analyzer['AnalyzerID']} for user {user_id}: {request.action}",
-            "@AffectedAnalyzerID": analyzer["AnalyzerID"]
-        }
-
-        # Insert audit log directly
-        audit_query = """
-        INSERT INTO ops.AuditLogs (ActorUserID, Action, Details, AffectedAnalyzerID)
-        VALUES (?, ?, ?, ?)
-        """
-        db_helper.execute_query(audit_query, (
-            audit_params["@ActorUserID"], audit_params["@Action"],
-            audit_params["@Details"], audit_params["@AffectedAnalyzerID"]
-        ))
-
-        return {
-            "success": True,
-            "message": f"Control request '{request.action}' queued for analyzer {analyzer['SerialNumber']}",
-            "analyzer_id": analyzer["AnalyzerID"],
-            "user_id": user_id
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Control device error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to control device")
-
-@router.post("/analyzers/{analyzer_id}/control")
-async def control_analyzer(analyzer_id: int, request: ControlRequest, current_user: Dict = Depends(get_current_user)):
-    """Admin control of analyzer (cutoff/reconnect via Modbus)."""
-    try:
-        if current_user.get("role") != "Admin":
-            raise HTTPException(status_code=403, detail="Admin access required")
-
-        if request.action not in ["on", "off", "reset"]:
-            raise HTTPException(status_code=400, detail="Invalid action. Must be 'on', 'off', or 'reset'")
-
-        # Check analyzer exists and get user
-        analyzer_row = db_helper.execute_query(
-            "SELECT AnalyzerID, UserID, SerialNumber FROM app.Analyzers WHERE AnalyzerID = ? AND IsActive = 1",
-            (analyzer_id,)
-        )
-        if not analyzer_row:
-            raise HTTPException(status_code=404, detail="Analyzer not found")
-
-        user_id = analyzer_row[0]["UserID"]
-
-        # For now, log the control request
-        # In production, this would signal the Modbus poller to perform the action
-
-        # Log event
-        event_query = """
-        INSERT INTO ops.Events (UserID, AnalyzerID, Level, EventType, Message, Source, MetaData)
-        VALUES (?, ?, 'INFO', 'analyzer_control', ?, 'API', ?)
-        """
-        message = f"Admin {current_user.get('username')} requested {request.action} control for analyzer {analyzer_row[0]['SerialNumber']}"
-        metadata = f'{{"action": "{request.action}", "analyzer_id": {analyzer_id}, "requested_by": "{current_user.get("username")}"}}'
-
-        db_helper.execute_query(event_query, (user_id, analyzer_id, message, metadata))
-
-        # Audit log
-        audit_query = """
-        INSERT INTO ops.AuditLogs (ActorUserID, Action, Details, AffectedAnalyzerID)
-        VALUES (?, 'AnalyzerControl', ?, ?)
-        """
-        details = f"Admin {current_user.get('username')} controlled analyzer {analyzer_id}: {request.action}"
-        db_helper.execute_query(audit_query, (current_user.get("user_id"), details, analyzer_id))
-
-        return {
-            "success": True,
-            "message": f"Control request '{request.action}' queued for analyzer {analyzer_row[0]['SerialNumber']}",
-            "analyzer_id": analyzer_id,
-            "user_id": user_id
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Control analyzer error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to control analyzer")
 
 @router.put("/users/{user_id}")
 async def update_user(user_id: int, request: UserUpdateRequest, current_user: Dict = Depends(get_current_user)):
@@ -641,45 +536,4 @@ async def mark_event_read(event_id: int, current_user: Dict = Depends(get_curren
         print(f"Mark event read error: {e}")
         raise HTTPException(status_code=500, detail="Failed to mark event as read")
 
-@router.post("/analyzers/{analyzer_id}/coil/enqueue")
-async def enqueue_analyzer_coil(analyzer_id: int, request: ControlRequest, current_user: Dict = Depends(get_current_user)):
-    try:
-        if current_user.get("role") != "Admin":
-            raise HTTPException(status_code=403, detail="Admin access required")
-
-        if request.action not in ["on", "off"]:
-            raise HTTPException(status_code=400, detail="Invalid action. Must be 'on' or 'off'")
-
-        analyzer_row = db_helper.execute_query(
-            "SELECT AnalyzerID FROM app.Analyzers WHERE AnalyzerID = ? AND IsActive = 1",
-            (analyzer_id,)
-        )
-        if not analyzer_row:
-            raise HTTPException(status_code=404, detail="Analyzer not found")
-
-        desired_state = 1 if request.action == "on" else 0
-
-        insert_query = (
-            """
-            INSERT INTO dbo.ActuatorOutbox (AnalyzerId, DesiredState, Attempts, Status)
-            VALUES (?, ?, 0, 'Pending');
-            SELECT SCOPE_IDENTITY() as OutboxId;
-            """
-        )
-        result = db_helper.execute_query(insert_query, (analyzer_id, desired_state))
-
-        outbox_id = int(result[0]["OutboxId"]) if result else None
-
-        return {
-            "success": True,
-            "message": f"Control '{request.action}' enqueued",
-            "analyzer_id": analyzer_id,
-            "desired_state": desired_state,
-            "outbox_id": outbox_id
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Enqueue analyzer coil error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to enqueue control command")
+# Legacy coil enqueue removed
